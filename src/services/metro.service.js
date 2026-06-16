@@ -73,23 +73,38 @@ export async function getIncidents() {
     return data;
 }
 
-async function moderateIncidentImage(imageBuffer, mimeType) {
+async function moderateIncident(comment, imageBuffer, mimeType) {
     try {
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) return true; 
 
-        const base64Image = imageBuffer.toString('base64');
-        const prompt = "Analiza esta imagen de un reporte de transporte público en CDMX. ¿Muestra algún problema real, retraso, tren averiado, andén lleno, inundación o infraestructura con fallas? Responde estrictamente un JSON con formato: {\"valid\": true} si es apta y real, o {\"valid\": false} si contiene violencia, desnudez, odio, spam o cosas que no tienen relación con el transporte público.";
+        let prompt = `Analiza este reporte de incidente de transporte público en CDMX.
+Comentario del usuario: "${comment || ''}"`;
+
+        const contents = [];
+        if (imageBuffer) {
+            const base64Image = imageBuffer.toString('base64');
+            prompt += `\nAnaliza también la imagen adjunta. Muestra algún problema real, retraso, tren averiado, andén lleno, inundación o infraestructura con fallas?`;
+            contents.push({
+                parts: [
+                    { text: prompt },
+                    { inlineData: { mimeType, data: base64Image } }
+                ]
+            });
+        } else {
+            prompt += `\n¿Es un comentario legítimo sobre retrasos, fallas, andén lleno o seguridad en el transporte?`;
+            contents.push({
+                parts: [{ text: prompt }]
+            });
+        }
+
+        const systemInstruction = `Eres un moderador estricto para Metro Radar CDMX. Tu tarea es bloquear spam, anuncios (publicidad de cualquier producto, canal o negocio), discursos de odio, contenido ofensivo o reportes falsos/irrelevantes. Responde estrictamente un JSON con formato: {"valid": true} si el reporte es legítimo, o {"valid": false} si es spam, publicidad, falso o inapropiado.`;
 
         const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
             {
-                contents: [{
-                    parts: [
-                        { text: prompt },
-                        { inlineData: { mimeType, data: base64Image } }
-                    ]
-                }],
+                contents,
+                systemInstruction: { parts: [{ text: systemInstruction }] },
                 generationConfig: { responseMimeType: 'application/json' }
             },
             { headers: { 'Content-Type': 'application/json' } }
@@ -100,7 +115,7 @@ async function moderateIncidentImage(imageBuffer, mimeType) {
         const result = JSON.parse(text);
         return result.valid === true;
     } catch (e) {
-        console.error("Error al moderar imagen:", e);
+        console.error("Error al moderar incidente:", e);
         return true;
     }
 }
@@ -112,24 +127,24 @@ export async function createIncident(fields, imageBuffer, mimeType) {
 
     const { station_id, system, comment, device_id } = fields;
 
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    // Limit to 5 incidents per 24 hours per device
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { data: recent, error: spamErr } = await supabase
         .from('incidents')
         .select('id')
         .eq('device_id', device_id)
-        .gt('created_at', oneHourAgo);
+        .gt('created_at', twentyFourHoursAgo);
 
     if (spamErr) {
         console.error("Error validando spam:", spamErr);
-    } else if (recent && recent.length >= 2) {
-        return { error: 'Límite de spam alcanzado. Intenta de nuevo más tarde.', statusCode: 429 };
+    } else if (recent && recent.length >= 5) {
+        return { error: 'Límite de reportes diarios (5) alcanzado para este dispositivo.', statusCode: 429 };
     }
 
-    if (imageBuffer) {
-        const isOk = await moderateIncidentImage(imageBuffer, mimeType);
-        if (!isOk) {
-            return { error: 'La foto fue rechazada por nuestro sistema de moderación automática (Spam o contenido inapropiado).', statusCode: 400 };
-        }
+    // Moderate comment and image
+    const isOk = await moderateIncident(comment, imageBuffer, mimeType);
+    if (!isOk) {
+        return { error: 'El reporte fue rechazado por nuestro sistema de moderación automática (Spam, publicidad o contenido inapropiado).', statusCode: 400 };
     }
 
     let imageUrl = null;
