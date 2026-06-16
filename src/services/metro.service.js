@@ -13,12 +13,13 @@ export async function getWeather(lat, lon) {
 }
 
 export async function downloadLine(system, line) {
+    const apiLine = (system.toUpperCase() === 'METRO' && line === '12') ? 'L12' : line;
     const [stationRes, pathRes] = await Promise.all([
         axios.get(
-            `https://apimetro.dev/movilidad/mapas/geojsonEstacion?sistema=${system}&num_comercial=${line}`
+            `https://apimetro.dev/movilidad/mapas/geojsonEstacion?sistema=${system}&num_comercial=${apiLine}`
         ),
         axios.get(
-            `https://apimetro.dev/movilidad/mapas/geojsonLinea?sistema=${system}&num_comercial=${line}`
+            `https://apimetro.dev/movilidad/mapas/geojsonLinea?sistema=${system}&num_comercial=${apiLine}`
         )
     ]);
     return {
